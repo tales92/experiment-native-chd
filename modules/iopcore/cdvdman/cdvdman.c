@@ -253,6 +253,8 @@ int DeviceReadSectorsCHD(u64 lsn, void *addr, unsigned int count)
 static int probed = 0;
 static int ProbeZSO(u8 *buffer)
 {
+    DeviceReadSectorsPtr = &DeviceReadSectors;
+    chd_close();
     if (DeviceReadSectors(0, buffer, 1) != SCECdErNO)
         return 0;
     probed = 1;
@@ -263,6 +265,9 @@ static int ProbeZSO(u8 *buffer)
     } else if (memcmp(buffer, OPL_CHD_MAGIC, 8) == 0 && chd_init()) {
         initCache();
         DeviceReadSectorsPtr = &DeviceReadSectorsCHD;
+    } else {
+        chd_close();
+        DeviceReadSectorsPtr = &DeviceReadSectors;
     }
     return 1;
 }

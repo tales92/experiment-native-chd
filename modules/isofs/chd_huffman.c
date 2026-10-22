@@ -455,7 +455,8 @@ int huffman_build_tree(struct huffman_decoder* decoder, uint32_t totaldata, uint
 			decoder->huffnode[curcode].bits = curcode;
 
 			/* scale the weight by the current effective length, ensuring we don't go to 0 */
-			decoder->huffnode[curcode].weight = ((uint64_t)decoder->datahisto[curcode]) * ((uint64_t)totalweight) / ((uint64_t)totaldata);
+			/* For CHD map trees the alphabet is capped at 19 symbols, so the 32-bit product is bounded. */
+			decoder->huffnode[curcode].weight = (decoder->datahisto[curcode] * totalweight) / totaldata;
 			if (decoder->huffnode[curcode].weight == 0)
 				decoder->huffnode[curcode].weight = 1;
 		}
