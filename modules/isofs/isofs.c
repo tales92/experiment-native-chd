@@ -161,7 +161,11 @@ void *ziso_alloc(u32 size)
     return AllocSysMemory(0, size, NULL);
 }
 void *chd_alloc(u32 size) { return AllocSysMemory(0, size, NULL); }
-void chd_free(void *ptr) { if (ptr != NULL) FreeSysMemory(ptr); }
+void chd_free(void *ptr)
+{
+    if (ptr != NULL)
+        FreeSysMemory(ptr);
+}
 int chd_read_raw_data(u8 *addr, u32 size, u32 offset) { return read_raw_data(addr, size, offset, 0); }
 
 int read_raw_data(u8 *addr, u32 size, u32 offset, u32 shift)
