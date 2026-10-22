@@ -8,8 +8,8 @@
 
 ***************************************************************************/
 
-#include <stdlib.h>
 #include "chd_bitstream.h"
+#include "chd.h"
 
 /***************************************************************************
  *  INLINE FUNCTIONS
@@ -25,7 +25,9 @@ int bitstream_overflow(struct bitstream* bitstream) { return ((bitstream->doffse
 
 struct bitstream* create_bitstream(const void *src, uint32_t srclength)
 {
-	struct bitstream* bitstream = (struct bitstream*)malloc(sizeof(struct bitstream));
+	struct bitstream* bitstream = (struct bitstream*)chd_alloc(sizeof(struct bitstream));
+	if (bitstream == NULL)
+		return NULL;
 	bitstream->buffer = 0;
 	bitstream->bits = 0;
 	bitstream->read = (const uint8_t*)src;

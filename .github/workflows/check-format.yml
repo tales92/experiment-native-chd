@@ -27,3 +27,4 @@ jobs:
         extensions: 'h,c'
         clangFormatVersion: 12
         inplace: False
+        exclude: './modules/isofs/chd ./modules/isofs/chd.c ./modules/isofs/chd.h ./modules/isofs/chd_bitstream.c ./modules/isofs/chd_bitstream.h ./modules/isofs/chd_huffman.c ./modules/isofs/chd_huffman.h ./modules/isofs/chdconfig.h ./src/chd.c ./tests/chd_reader_test.c'

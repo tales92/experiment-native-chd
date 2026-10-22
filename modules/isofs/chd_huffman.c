@@ -96,11 +96,10 @@
 
 ***************************************************************************/
 
-#include <stdlib.h>
-#include <stdio.h>
 #include <string.h>
 
 #include "chd_huffman.h"
+#include "chd.h"
 /* The upstream macros header only supplies MIN and MAX here. */
 #ifndef MIN
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
@@ -135,21 +134,29 @@ struct huffman_decoder* create_huffman_decoder(int numcodes, int maxbits)
 	if (maxbits > 24)
 		return NULL;
 
-	decoder = (struct huffman_decoder*)malloc(sizeof(struct huffman_decoder));
+	decoder = (struct huffman_decoder*)chd_alloc(sizeof(struct huffman_decoder));
+	if (decoder == NULL)
+		return NULL;
+	memset(decoder, 0, sizeof(*decoder));
 	decoder->numcodes = numcodes;
 	decoder->maxbits = maxbits;
 #if LOWRAM_TARGET
 	decoder->l1bits = MIN(maxbits, LOWRAM_TARGET_HUFFMAN_L1BITS);
-	decoder->lookup = (lookup_value*)malloc(sizeof(lookup_value) * (1u << decoder->l1bits));
+	decoder->lookup = (lookup_value*)chd_alloc(sizeof(lookup_value) * (1u << decoder->l1bits));
 	decoder->subtable = NULL;
 	decoder->subtable_count = 0;
 #else
-	decoder->lookup = (lookup_value*)malloc(sizeof(lookup_value) * (1 << maxbits));
+	decoder->lookup = (lookup_value*)chd_alloc(sizeof(lookup_value) * (1 << maxbits));
 #endif
-	decoder->huffnode = (struct node_t*)malloc(sizeof(struct node_t) * numcodes);
+	decoder->huffnode = (struct node_t*)chd_alloc(sizeof(struct node_t) * numcodes);
 	decoder->datahisto = NULL;
 	decoder->prevdata = 0;
 	decoder->rleremaining = 0;
+	if (decoder->lookup == NULL || decoder->huffnode == NULL)
+	{
+		delete_huffman_decoder(decoder);
+		return NULL;
+	}
 	return decoder;
 }
 
@@ -158,14 +165,14 @@ void delete_huffman_decoder(struct huffman_decoder* decoder)
 	if (decoder != NULL)
 	{
 		if (decoder->lookup != NULL)
-			free(decoder->lookup);
+			chd_free(decoder->lookup);
 #if LOWRAM_TARGET
 		if (decoder->subtable != NULL)
-			free(decoder->subtable);
+			chd_free(decoder->subtable);
 #endif
 		if (decoder->huffnode != NULL)
-			free(decoder->huffnode);
-		free(decoder);
+			chd_free(decoder->huffnode);
+		chd_free(decoder);
 	}
 }
 
@@ -436,7 +443,9 @@ int huffman_build_tree(struct huffman_decoder* decoder, uint32_t totaldata, uint
 	int listitems = 0;
 	int maxbits = 0;
 	/* make a list of all non-zero nodes */
-	struct node_t** list = (struct node_t**)malloc(sizeof(struct node_t*) * decoder->numcodes * 2);
+	struct node_t** list = (struct node_t**)chd_alloc(sizeof(struct node_t*) * decoder->numcodes * 2);
+	if (list == NULL)
+		return 0;
 	memset(decoder->huffnode, 0, decoder->numcodes * sizeof(decoder->huffnode[0]));
 	for (curcode = 0; curcode < decoder->numcodes; curcode++)
 		if (decoder->datahisto[curcode] != 0)
@@ -458,8 +467,18 @@ int huffman_build_tree(struct huffman_decoder* decoder, uint32_t totaldata, uint
 	}
 #endif
 
-	/* sort the list by weight, largest weight first */
-	qsort(&list[0], listitems, sizeof(list[0]), huffman_tree_node_compare);
+	/* Sort largest weight first without relying on libc qsort in the IOP. */
+	for (int sort_i = 1; sort_i < listitems; sort_i++)
+	{
+		struct node_t *item = list[sort_i];
+		int sort_j = sort_i;
+		while (sort_j > 0 && huffman_tree_node_compare(&list[sort_j - 1], &item) > 0)
+		{
+			list[sort_j] = list[sort_j - 1];
+			sort_j--;
+		}
+		list[sort_j] = item;
+	}
 
 #if 0
 	fprintf(stderr, "Post-sort:\n");
@@ -516,6 +535,7 @@ int huffman_build_tree(struct huffman_decoder* decoder, uint32_t totaldata, uint
 			maxbits = MAX(maxbits, ((int)node->numbits));
 		}
 	}
+	chd_free(list);
 	return maxbits;
 }
 
@@ -582,7 +602,7 @@ enum huffman_error huffman_build_lookup_table(struct huffman_decoder* decoder)
 	/* build-time-only bookkeeping: which first-level prefix already has a
 	 * subtable allocated for it. Not part of the decoder's persistent RAM
 	 * footprint - freed before this function returns. */
-	prefix_subid = (int32_t*)malloc(sizeof(int32_t) * l1size);
+	prefix_subid = (int32_t*)chd_alloc(sizeof(int32_t) * l1size);
 	if (prefix_subid == NULL)
 		return HUFFERR_INTERNAL_INCONSISTENCY;
 	for (i = 0; i < l1size; i++)
@@ -604,7 +624,7 @@ enum huffman_error huffman_build_lookup_table(struct huffman_decoder* decoder)
 	 * every assigned length participates in the Kraft-equality check in
 	 * huffman_assign_canonical_codes() (length 1 is exempt there, and a
 	 * degenerate/malformed tree can leave other gaps too). An unwritten
-	 * slot would otherwise hold malloc() garbage that can alias a valid
+	 * slot would otherwise hold chd_alloc() garbage that can alias a valid
 	 * escape entry (bits field == 0) pointing at a subtable index that was
 	 * never allocated - decode would then index decoder->subtable with it
 	 * while subtable is still NULL. Prefill with a bounded, non-escaping
@@ -665,12 +685,18 @@ enum huffman_error huffman_build_lookup_table(struct huffman_decoder* decoder)
 					goto done;
 				}
 				subid = decoder->subtable_count;
-				grown = (lookup_value*)realloc(decoder->subtable,
+				grown = (lookup_value*)chd_alloc(
 					sizeof(lookup_value) * subsize * (decoder->subtable_count + 1));
 				if (grown == NULL)
 				{
 					result = HUFFERR_INTERNAL_INCONSISTENCY;
 					goto done;
+				}
+				if (decoder->subtable != NULL && decoder->subtable_count > 0)
+				{
+					memcpy(grown, decoder->subtable,
+						sizeof(lookup_value) * subsize * decoder->subtable_count);
+					chd_free(decoder->subtable);
 				}
 				decoder->subtable = grown;
 				decoder->subtable_count++;
@@ -709,7 +735,7 @@ enum huffman_error huffman_build_lookup_table(struct huffman_decoder* decoder)
 	}
 
 done:
-	free(prefix_subid);
+	chd_free(prefix_subid);
 	return result;
 }
 #else

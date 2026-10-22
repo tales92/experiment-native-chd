@@ -5,11 +5,15 @@
  * Map decoding is derived from libchdr (BSD-3-Clause); tinfl comes from miniz.
  */
 #include <stdint.h>
-#include <stdlib.h>
 #include <string.h>
 #include "chd.h"
 #include "chd_bitstream.h"
 #include "chd_huffman.h"
+#define MINIZ_NO_MALLOC
+#define MINIZ_NO_ARCHIVE_APIS
+#define MINIZ_NO_DEFLATE_APIS
+#define MINIZ_NO_STDIO
+#define MINIZ_NO_TIME
 #include "chd/miniz.h"
 #define CHD_HEADER_SIZE 124U
 #define CHD_ENTRY_SIZE 12U
@@ -121,7 +125,7 @@ static int decode_map(u64 map_offset)
     ok=1;
 done:
     if(decoder) delete_huffman_decoder(decoder);
-    if(bits) free(bits);
+    if(bits) chd_free(bits);
     if(packed) chd_free(packed);
     if(!ok && g_map){ chd_free(g_map); g_map=NULL; }
     return ok;
@@ -218,8 +222,4 @@ int chd_read_sector(u8 *buffer,u32 lsn,unsigned int count)
 /* Compile the small decoder dependencies into this object on EE and IOP. */
 #include "chd_bitstream.c"
 #include "chd_huffman.c"
-#define MINIZ_NO_ARCHIVE_APIS
-#define MINIZ_NO_DEFLATE_APIS
-#define MINIZ_NO_STDIO
-#define MINIZ_NO_TIME
 #include "chd/miniz.c"
