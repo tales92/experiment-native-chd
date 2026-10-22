@@ -143,7 +143,8 @@ int chd_init(void)
 {
     u8 h[CHD_HEADER_SIZE];
     u32 version, header_bytes, c0,c1,c2,c3,unit_bytes,i;
-    u64 map_offset,hunks64,sectors64;
+    u32 sectors_per_hunk;
+    u64 map_offset,sectors64;
     chd_close();
     if(chd_read_raw_data(h,sizeof(h),0)!=(int)sizeof(h) || memcmp(h,OPL_CHD_MAGIC,8)!=0) return 0;
     header_bytes=be32(h+8); version=be32(h+12);
@@ -152,14 +153,20 @@ int chd_init(void)
     g_hunk_bytes=be32(h+56); unit_bytes=be32(h+60);
     if(header_bytes!=CHD_HEADER_SIZE || version!=5 || c0!=OPL_CHD_CODEC_ZLIB ||
        c1 || c2 || c3 || unit_bytes!=CHD_SECTOR_SIZE || !g_logical_bytes ||
-       g_logical_bytes%CHD_SECTOR_SIZE || g_hunk_bytes<CHD_MIN_HUNK_BYTES ||
+       (g_logical_bytes & (CHD_SECTOR_SIZE - 1U)) != 0 ||
+       g_hunk_bytes<CHD_MIN_HUNK_BYTES ||
        g_hunk_bytes>CHD_MAX_HUNK_BYTES || g_hunk_bytes%CHD_SECTOR_SIZE ||
        map_offset>UINT32_MAX) goto fail;
     for(i=104;i<124;i++) if(h[i]!=0) goto fail; /* no parent CHD */
-    sectors64=g_logical_bytes/CHD_SECTOR_SIZE;
-    hunks64=g_logical_bytes/g_hunk_bytes+(g_logical_bytes%g_hunk_bytes?1:0);
-    if(!sectors64 || sectors64>UINT32_MAX || !hunks64 || hunks64>CHD_MAX_HUNKS) goto fail;
-    g_sector_count=(u32)sectors64; g_hunk_count=(u32)hunks64;
+    sectors64 = g_logical_bytes >> 11;
+    if (!sectors64 || sectors64 > UINT32_MAX) goto fail;
+    g_sector_count = (u32)sectors64;
+    sectors_per_hunk = g_hunk_bytes >> 11;
+    if (!sectors_per_hunk) goto fail;
+    g_hunk_count = g_sector_count / sectors_per_hunk;
+    if (g_sector_count % sectors_per_hunk)
+        g_hunk_count++;
+    if (!g_hunk_count || g_hunk_count > CHD_MAX_HUNKS) goto fail;
     if(!decode_map(map_offset)) goto fail;
     g_hunk_buf=(u8*)chd_alloc(g_hunk_bytes);
     g_comp_buf=(u8*)chd_alloc(g_hunk_bytes);
@@ -204,17 +211,22 @@ int chd_read_sector(u8 *buffer,u32 lsn,unsigned int count)
 {
     u32 done=0;
     if(!g_active || !buffer || !count || lsn>=g_sector_count) return 0;
-    if((u64)lsn+count>g_sector_count) count=g_sector_count-lsn;
-    while(done<count){
-        u64 byte_pos=(u64)(lsn+done)*CHD_SECTOR_SIZE;
-        u32 hunk=(u32)(byte_pos/g_hunk_bytes);
-        u32 in_hunk=(u32)(byte_pos%g_hunk_bytes);
-        u32 available=g_hunk_bytes-in_hunk;
-        u32 remaining=(count-done)*CHD_SECTOR_SIZE;
-        u32 bytes=available<remaining?available:remaining;
-        if(!load_hunk(hunk)) return (int)done;
-        memcpy(buffer+done*CHD_SECTOR_SIZE,g_hunk_buf+in_hunk,bytes);
-        done+=bytes/CHD_SECTOR_SIZE;
+    if (count > g_sector_count - lsn)
+        count = g_sector_count - lsn;
+    while (done < count) {
+        u32 sector_pos = lsn + done;
+        u32 sectors_per_hunk = g_hunk_bytes >> 11;
+        u32 hunk = sector_pos / sectors_per_hunk;
+        u32 sector_in_hunk = sector_pos % sectors_per_hunk;
+        u32 in_hunk = sector_in_hunk * CHD_SECTOR_SIZE;
+        u32 available_sectors = sectors_per_hunk - sector_in_hunk;
+        u32 remaining_sectors = count - done;
+        u32 copy_sectors = available_sectors < remaining_sectors ? available_sectors : remaining_sectors;
+        u32 bytes = copy_sectors * CHD_SECTOR_SIZE;
+        if (!load_hunk(hunk))
+            return (int)done;
+        memcpy(buffer + done * CHD_SECTOR_SIZE, g_hunk_buf + in_hunk, bytes);
+        done += copy_sectors;
     }
     return (int)done;
 }
