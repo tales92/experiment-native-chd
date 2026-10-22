@@ -1,0 +1,26 @@
+name: CHD reader host test
+on:
+  push:
+    branches: [experiment/chd-v5-zlib]
+  pull_request:
+    branches: [experiment/chd-v5-zlib]
+  workflow_dispatch:
+jobs:
+  chd-reader:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install CHD fixture tools
+        run: sudo apt-get update && sudo apt-get install -y mame-tools genisoimage
+      - name: Create a test ISO and zlib-only CHD
+        run: |
+          mkdir -p /tmp/chd-fixture/files
+          dd if=/dev/zero of=/tmp/chd-fixture/files/repeated-zero-data.bin bs=1M count=4 status=none
+          printf 'OPL native CHD test fixture\n' > /tmp/chd-fixture/files/readme.txt
+          genisoimage -quiet -o /tmp/chd-fixture.iso -V OPLCHDTEST -R /tmp/chd-fixture
+          chdman createdvd -i /tmp/chd-fixture.iso -o /tmp/chd-fixture.chd -c zlib -hs 262144 -us 2048
+          chdman verify -i /tmp/chd-fixture.chd
+      - name: Compile the host test harness
+        run: gcc -std=c99 -O2 -DCHD_HOST_TEST -I modules/isofs tests/chd_reader_test.c modules/isofs/chd.c -o /tmp/chd-reader-test
+      - name: Compare decoded CHD sectors against the source ISO
+        run: /tmp/chd-reader-test /tmp/chd-fixture.chd /tmp/chd-fixture.iso

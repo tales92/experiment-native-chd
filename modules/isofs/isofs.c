@@ -10,6 +10,7 @@
 #include <irx.h>
 
 #include "zso.h"
+#include "chd.h"
 
 #define MODNAME "isofs"
 IRX_ID(MODNAME, 1, 1);
@@ -102,6 +103,7 @@ static FHANDLE *cdvdman_getfilefreeslot(void)
 
 static int unmount(struct MountData *pMountData)
 {
+    chd_close();
     if (pMountData->fd >= 0) {
         close(pMountData->fd);
         pMountData->fd = -1;
@@ -158,6 +160,9 @@ void *ziso_alloc(u32 size)
 {
     return AllocSysMemory(0, size, NULL);
 }
+void *chd_alloc(u32 size) { return AllocSysMemory(0, size, NULL); }
+void chd_free(void *ptr) { if (ptr != NULL) FreeSysMemory(ptr); }
+int chd_read_raw_data(u8 *addr, u32 size, u32 offset) { return read_raw_data(addr, size, offset, 0); }
 
 int read_raw_data(u8 *addr, u32 size, u32 offset, u32 shift)
 {
@@ -178,8 +183,21 @@ static int cdEmuReadCompressed(u32 lsn, unsigned int count, void *addr)
 {
     return (ziso_read_sector(addr, lsn, count) == count) ? 0 : -EIO;
 }
-
+static int cdEmuReadCHD(u32 lsn, unsigned int count, void *addr)
+{
+    return (chd_read_sector((u8 *)addr, lsn, count) == count) ? 0 : -EIO;
+}
 static int (*cdEmuRead)(u32 lsn, unsigned int count, void *buffer) = &cdEmuReadRaw;
+static int ProbeCHD(int fd)
+{
+    char signature[8];
+    chd_close();
+    longLseek(fd, 0);
+    if (read(fd, signature, sizeof(signature)) != sizeof(signature) ||
+        memcmp(signature, OPL_CHD_MAGIC, sizeof(signature)) != 0)
+        return 0;
+    return chd_init();
+}
 
 //-------------------------------------------------------------------------
 static void cdvdman_trimspaces(char *str)
@@ -532,7 +550,8 @@ int ProbeISO9660(int fd, unsigned int sector, layer_info_t *layer_info)
     int prev_fd = MountPoint.fd;
     MountPoint.fd = fd; // for cdEmuRead
 
-    ProbeZISO(fd);
+    if (!ProbeZISO(fd) && ProbeCHD(fd))
+        cdEmuRead = &cdEmuReadCHD;
 
     if (cdEmuRead(sector, 1, cdvdman_buf) == 0) {
         if ((cdvdman_buf[0x00] == 1) && (!memcmp(&cdvdman_buf[0x01], "CD001", 5))) {

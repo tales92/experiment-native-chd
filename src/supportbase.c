@@ -19,6 +19,7 @@
 #include <ps2sdkapi.h>   // lseek64
 
 #include "../modules/isofs/zso.h"
+#include "../modules/isofs/chd.h"
 
 /// internal linked list used to populate the list from directory listing
 struct game_list_t
@@ -65,7 +66,7 @@ int isValidIsoName(char *name, int *pNameLen)
 
     // Minimum is 17 char, GameID (11) + "." (1) + filename (1 min.) + ".iso" (4)
     int size = strlen(name);
-    if (strcasecmp(&name[size - 4], ".iso") == 0 || strcasecmp(&name[size - 4], ".zso") == 0) {
+    if (strcasecmp(&name[size - 4], ".iso") == 0 || strcasecmp(&name[size - 4], ".zso") == 0 || strcasecmp(&name[size - 4], ".chd") == 0) {
         if ((size >= 17) && (name[4] == '_') && (name[8] == '.') && (name[11] == '.')) {
             *pNameLen = size - 16;
             return GAME_FORMAT_OLD_ISO;
@@ -481,17 +482,27 @@ static int ProbeZISO(int fd)
         ZISO_header header;
         u32 first_block;
     } ziso_data;
+    chd_close();
     lseek(fd, 0, SEEK_SET);
     if (read(fd, &ziso_data, sizeof(ziso_data)) == sizeof(ziso_data) && ziso_data.header.magic == ZSO_MAGIC) {
-        // initialize ZSO
         ziso_init(&ziso_data.header, ziso_data.first_block);
-        // set ISO file descriptor for ZSO reader
         probed_fd = fd;
         probed_lba = 0;
         return 1;
-    } else {
-        return 0;
     }
+    return 0;
+}
+static int ProbeCHD(int fd)
+{
+    char signature[8];
+    chd_close();
+    if (lseek64(fd, 0, SEEK_SET) != 0 || read(fd, signature, sizeof(signature)) != sizeof(signature))
+        return 0;
+    if (memcmp(signature, OPL_CHD_MAGIC, sizeof(signature)) != 0)
+        return 0;
+    probed_fd = fd;
+    probed_lba = 0;
+    return chd_init();
 }
 
 u32 sbGetISO9660MaxLBA(const char *path)
@@ -501,16 +512,21 @@ u32 sbGetISO9660MaxLBA(const char *path)
 
     if ((file = open(path, O_RDONLY, 0666)) >= 0) {
         if (ProbeZISO(file)) {
-            if (ziso_read_sector(IOBuffer, 16, 1) == 1) {
+            if (ziso_read_sector(IOBuffer, 16, 1) == 1)
                 maxLBA = *(u32 *)(IOBuffer + 80);
-            } else {
+            else
                 maxLBA = 0;
-            }
+        } else if (ProbeCHD(file)) {
+            if (chd_read_sector(IOBuffer, 16, 1) == 1)
+                maxLBA = *(u32 *)(IOBuffer + 80);
+            else
+                maxLBA = 0;
         } else {
             lseek(file, 16 * 2048 + 80, SEEK_SET);
             if (read(file, &maxLBA, sizeof(maxLBA)) != sizeof(maxLBA))
                 maxLBA = 0;
         }
+        chd_close();
         close(file);
     } else {
         maxLBA = 0;
@@ -530,6 +546,9 @@ u32 sbGetMediaLsnCount(const char *path, u64 totalBytes)
     if ((fd = open(path, O_RDONLY, 0666)) >= 0) {
         if (ProbeZISO(fd))
             lsnCount = ziso_total_block;
+        else if (ProbeCHD(fd))
+            lsnCount = chd_sector_count();
+        chd_close();
         close(fd);
     }
 
@@ -552,6 +571,11 @@ int sbProbeISO9660(const char *path, base_game_info_t *game, u32 layer1_offset)
                     ((IOBuffer[0x00] == 1) && (!strncmp((char *)(&IOBuffer[0x01]), "CD001", 5)))) {
                     result = 0;
                 }
+            } else if (ProbeCHD(fd)) {
+                if (chd_read_sector(IOBuffer, layer1_offset, 1) == 1 &&
+                    ((IOBuffer[0x00] == 1) && (!strncmp((char *)(&IOBuffer[0x01]), "CD001", 5)))) {
+                    result = 0;
+                }
             } else {
                 if (lseek64(fd, (u64)layer1_offset * 2048, SEEK_SET) == (u64)layer1_offset * 2048) {
                     if ((read(fd, buffer, sizeof(buffer)) == sizeof(buffer)) &&
@@ -560,6 +584,7 @@ int sbProbeISO9660(const char *path, base_game_info_t *game, u32 layer1_offset)
                     }
                 }
             }
+            chd_close();
             close(fd);
         } else
             result = fd;

@@ -6,6 +6,7 @@
 
 #include "internal.h"
 #include "../../isofs/zso.h"
+#include "../../isofs/chd.h"
 
 #define MODNAME "cdvd_driver"
 IRX_ID(MODNAME, 1, 1);
@@ -163,6 +164,9 @@ void *ziso_alloc(u32 size)
 {
     return AllocSysMemory(0, size, NULL);
 }
+void *chd_alloc(u32 size) { return AllocSysMemory(0, size, NULL); }
+void chd_free(void *ptr) { if (ptr != NULL) FreeSysMemory(ptr); }
+int chd_read_raw_data(u8 *addr, u32 size, u32 offset) { return read_raw_data(addr, size, offset, 0); }
 
 /*
   This small improvement will mostly benefit ZSO files.
@@ -192,6 +196,7 @@ int DeviceReadSectorsCached(u64 lsn, void *buffer, unsigned int sectors)
 */
 int read_raw_data(u8 *addr, u32 size, u32 offset, u32 shift)
 {
+    static u8 raw_read_tmp[2048] __attribute__((aligned(64)));
     u32 o_size = size;
     u64 lba = offset / (2048 >> shift); // avoid overflow by shifting sector size instead of offset
     u32 pos = (offset << shift) & 2047; // doesn't matter if it overflows since we only care about the 11 LSB anyways
@@ -202,8 +207,8 @@ int read_raw_data(u8 *addr, u32 size, u32 offset, u32 shift)
     // read first block if not aligned to sector size
     if (pos) {
         int r = MIN(size, (2048 - pos));
-        ReadSectors(lba, ziso_tmp_buf, 1);
-        memcpy(addr, ziso_tmp_buf + pos, r);
+        ReadSectors(lba, raw_read_tmp, 1);
+        memcpy(addr, raw_read_tmp + pos, r);
         size -= r;
         lba++;
         addr += r;
@@ -223,8 +228,8 @@ int read_raw_data(u8 *addr, u32 size, u32 offset, u32 shift)
 
     // read remaining data
     if (size) {
-        ReadSectors(lba, ziso_tmp_buf, 1);
-        memcpy(addr, ziso_tmp_buf, size);
+        ReadSectors(lba, raw_read_tmp, 1);
+        memcpy(addr, raw_read_tmp, size);
         size = 0;
     }
 
@@ -236,6 +241,10 @@ int DeviceReadSectorsCompressed(u64 lsn, void *addr, unsigned int count)
 {
     return (ziso_read_sector(addr, (u32)lsn, count) == count) ? SCECdErNO : SCECdErEOM;
 }
+int DeviceReadSectorsCHD(u64 lsn, void *addr, unsigned int count)
+{
+    return (chd_read_sector((u8 *)addr, (u32)lsn, count) == count) ? SCECdErNO : SCECdErEOM;
+}
 
 static int probed = 0;
 static int ProbeZSO(u8 *buffer)
@@ -244,12 +253,12 @@ static int ProbeZSO(u8 *buffer)
         return 0;
     probed = 1;
     if (*(u32 *)buffer == ZSO_MAGIC) {
-        // initialize ZSO
         ziso_init((ZISO_header *)buffer, *(u32 *)(buffer + sizeof(ZISO_header)));
-        // initialize cache
         initCache();
-        // redirect sector reader
         DeviceReadSectorsPtr = &DeviceReadSectorsCompressed;
+    } else if (memcmp(buffer, OPL_CHD_MAGIC, 8) == 0 && chd_init()) {
+        initCache();
+        DeviceReadSectorsPtr = &DeviceReadSectorsCHD;
     }
     return 1;
 }
