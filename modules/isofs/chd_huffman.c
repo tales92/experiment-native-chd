@@ -101,7 +101,13 @@
 #include <string.h>
 
 #include "chd_huffman.h"
-#include "../include/libchdr/macros.h"
+/* The upstream macros header only supplies MIN and MAX here. */
+#ifndef MIN
+#define MIN(a, b) ((a) < (b) ? (a) : (b))
+#endif
+#ifndef MAX
+#define MAX(a, b) ((a) > (b) ? (a) : (b))
+#endif
 
 /***************************************************************************
  *  MACROS
